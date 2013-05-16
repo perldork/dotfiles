@@ -1,0 +1,20 @@
+color cursor default default reverse
+color default           white   default
+color diff-header       yellow  default
+color diff-index        cyan    default
+color diff-chunk        magenta default
+color diff-del          red     default bold
+color pp-refs           red     default bold
+color pp-commit         magenta default bold
+color diff-add          green   default bold
+color tree-file         magenta default bold
+color date              blue    default bold
+color diff-index        blue    default bold
+color diff-tree         blue    default bold
+color tree              blue    default bold
+color parent            blue    default bold
+color diff-index        blue    default bold
+color diff-stat         blue    default bold
+color delimiter         magenta default bold
+color stat-unstaged     magenta default bold
+color palette-0         magenta default bold
