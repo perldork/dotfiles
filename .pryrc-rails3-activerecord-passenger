@@ -1,0 +1,254 @@
+require %{./config/environment}
+require %{rails/console/app}
+require %{rails/console/helpers}
+require %{rails/commands/server}
+
+load './Rakefile'
+
+Pry.config.print = proc { |output, value| Pry::Helpers::BaseHelpers.stagger_output("=> #{value.ai}", output) }
+
+def clear
+  system(%{clear})
+end
+
+def find_edit( name )
+  system %{$EDITOR $(find #{ Rails.root } -name #{ name }) }
+end
+
+def start( server = :thin, options = { port: 3000 } )
+  s = Rack::Server.new
+  s.options[ :server ] = server
+
+  options.keys.each do |opt|
+    s.options[ opt ] = options[ opt ]
+  end
+
+  s.start
+end
+
+####################################################
+#  show- commands code initially came from pry-rails
+####################################################
+
+Commands = Pry::CommandSet.new do
+
+  create_command "pedit", "Edit project files matching passed in pattern using find to find them" do
+    group "Rails"
+
+    def options(opt)
+      opt.banner unindent <<-USAGE
+Usage: pedit <file-name-patterns>
+
+pedit will pass file names found matching <pattern> to your EDITOR for editing
+USAGE
+    end
+
+    def process
+     system %{#{ENV['EDITOR']} $(find #{ Rails.root } -name #{ args.join(%{ }) }) }
+    end
+
+  end
+
+  create_command "show-routes", "Print out all defined routes in match order, with names." do
+    group "Rails"
+
+    def options(opt)
+      opt.banner unindent <<-USAGE
+Usage: show-routes [-g] [-l]
+
+show-routes displays the current Rails app's routes.
+USAGE
+
+      opt.on :g, "grep", "Filter output by regular expression", :argument => true
+      opt.on :l, "long", "Show long output", :argument => false
+    end
+
+    def process
+      Rails.application.reload_routes!
+      all_routes = Rails.application.routes.routes
+
+      all_routes = begin
+        begin
+          # rails 4
+          require 'action_dispatch/routing/inspector'
+          inspector = ActionDispatch::Routing::RoutesInspector.new
+        rescue LoadError => e
+          # rails 3.2
+          require 'rails/application/route_inspector'
+          inspector = Rails::Application::RouteInspector.new
+        end
+        inspector.format(all_routes)
+      rescue LoadError => e
+        # rails 3.0 and 3.1. cribbed from
+        # https://github.com/rails/rails/blob/3-1-stable/railties/lib/rails/tasks/routes.rake
+        routes = all_routes.collect do |route|
+
+          reqs = route.requirements.dup
+          reqs[:to] = route.app unless route.app.class.name.to_s =~ /^ActionDispatch::Routing/
+            reqs = reqs.empty? ? "" : reqs.inspect
+
+          {:name => route.name.to_s, :verb => route.verb.to_s, :path => route.path, :reqs => reqs}
+        end
+
+        # Skip the route if it's internal info route
+        routes.reject! { |r| r[:path] =~ %r{/rails/info/properties|^/assets} }
+
+        name_width = routes.map{ |r| r[:name].length }.max
+        verb_width = routes.map{ |r| r[:verb].length }.max
+        path_width = routes.map{ |r| r[:path].length }.max
+
+        line = opts[:l] ? %{| #{%{-} * 76} |\n} : %{}
+
+        routes.sort{ |a,b| a[:path].gsub(%{_}, %{}) <=> b[:path].gsub(%{_}, %{}) }.map do |r|
+          name = (r[:name].nil? or r[:name].empty?) ? %{unnamed} : r[:name]
+          padding = %{ } * [0, (75 - (r[:path].size + r[:verb].size))].max
+          name = opts[:l] ? %{| Name: #{name.ljust(70)} |\n} : %{}
+          addl = opts[:l] ? %{| Addl: #{r[:reqs].ljust(70)} |\n} : %{}
+          line +
+          name +
+          (opts[:l] ? %{| } : %{}) +
+          %{#{opts[:l] ? r[:verb] : r[:verb].ljust(verb_width)} #{r[:path]}#{padding} } +
+          (opts[:l] ? %{|\n} : %{\n}) +
+          addl
+        end
+      end
+
+      stagger_output( all_routes.grep(Regexp.new(opts[:g] || ".")).join( %{} ) + line )
+    end
+  end
+
+  create_command "show-models", "Print out all defined models, with attribrutes." do
+    group "Rails"
+
+    def options(opt)
+      opt.banner unindent <<-USAGE
+Usage: show-models
+
+show-models displays the current Rails app's models.
+USAGE
+
+      opt.on :g, "grep", "Color output green by regular expression", :argument => true
+    end
+
+    def process
+      Rails.application.eager_load!
+
+      grep_regex = Regexp.new(opts[:g] || ".")
+
+      size = 80
+      inner = size - 4
+
+      models = []
+      line = %{|} + ('-' * 80) + %{|\n}
+
+      ActiveRecord::Base.descendants.map do |mod|
+
+        model_string = line + %{| #{mod.to_s} #{(%{ } * (inner - mod.to_s.size))}  |\n} + line
+
+        if mod.table_exists?
+          length = 0
+          mod.columns.sort{ |a,b| a.name <=> b.name }.map{ |col|
+            field_info =  %{| * }
+            field_info += col.name
+            field_info += (%{ } * [ 0, 35 - field_info.size ].max) + col.type.to_s
+            field_info += (%{ } * (size - [inner, field_info.size].min)) + %{ |\n}
+            model_string << field_info
+          }
+        else
+          model_string << "| Table doesn't exist" + (%{ } * 56) + %{ |\n}
+        end
+
+        model_string << line
+
+
+        length = 0
+        mod.reflections.each do |model,ref|
+          field_info =  %{| * }
+          field_info += ref.macro.to_s
+          field_info += (%{ } * [ 0, 35 - field_info.size ].max) + model.to_s
+          if ! ref.options[:through].nil?
+            field_info += (%{ } * (size - field_info.size)) + %{ |\n}
+            addl = %{  through #{ref.options[:through]}}
+            field_info += %{| } + (%{ } * 33) + addl
+            field_info += (%{ } * ((size - 35) - addl.size)) + %{ |\n}
+          else
+            field_info += (%{ } * (size - [inner, field_info.size].min)) + %{ |\n}
+          end
+          model_string << field_info
+        end
+        model_string += line
+        models << model_string if model_string.match( grep_regex )
+
+      end
+
+      stagger_output models.join(%{\n})
+    end
+  end
+
+  create_command "show-middleware" do
+    group "Rails"
+
+    def options(opt)
+      opt.banner unindent <<-USAGE
+Usage: show-middleware [-g]
+
+show-middleware shows the Rails app's middleware.
+
+If this pry REPL is attached to a Rails server, the entire middleware
+stack is displayed. Otherwise, only the middleware Rails knows about is
+printed.
+USAGE
+
+      opt.on :g, "grep", "Filter output by regular expression", :argument => true
+    end
+
+    def process
+      # assumes there is only one Rack::Server instance
+      server = nil
+      ObjectSpace.each_object(Rack::Server) do |object|
+        server = object
+      end
+
+      middlewares = []
+
+      if server
+        stack = server.instance_variable_get("@wrapped_app")
+        middlewares << stack.class.to_s
+
+        while stack.instance_variable_defined?("@app") do
+          stack = stack.instance_variable_get("@app")
+          # Rails 3.0 uses the Application class rather than the application
+          # instance itself, so we grab the instance.
+          stack = Rails.application if stack == Rails.application.class
+          middlewares << stack.class.to_s if stack != Rails.application
+        end
+      else
+        middleware_names = Rails.application.middleware.map do |middleware|
+          # After Rails 3.0, the middleware are wrapped in a special class
+          # that responds to #name.
+          if middleware.respond_to?(:name)
+            middleware.name
+          else
+            middleware.inspect
+          end
+        end
+        middlewares.concat middleware_names
+      end
+      middlewares << Rails.application.class.to_s
+      print_middleware middlewares.grep(Regexp.new(opts[:g] || "."))
+    end
+
+    def print_middleware(middlewares)
+      middlewares.each do |middleware|
+        string = if middleware == Rails.application.class.to_s
+          "run #{middleware}.routes"
+        else
+          "use #{middleware}"
+        end
+        output.puts string
+      end
+    end
+  end
+end
+
+Pry.commands.import Commands
